@@ -8,65 +8,35 @@ import (
 	"time"
 )
 
-// Root struct representing the entire API response
-type AccountResponse struct {
-	TotalSize int       `json:"totalSize"`
-	Done      bool      `json:"done"`
-	Records   []Account `json:"records"`
+type Person struct {
+	FirstName  string    `json:"first_name" jsonout:"firstName"`
+	LastName   string    `json:"last_name" jsonout:"lastName"`
+	Age        int       `json:"age" jsonout:"ageYears"`
+	Address    Address   `json:"address" jsonout:"homeAddress"`
+	CreateDate time.Time `json:"create_date" jsonout:"createDate" iso8601_utc:"true"`
+	CreateBy   User      `json:"create_by" jsonout:"createBy" flatten:"external_id"`
 }
 
-// Account struct representing the Account object and its relationships
-type Account struct {
-	Attributes    Attributes      `json:"attributes"`
-	Id            string          `json:"Id"`
-	Name          string          `json:"Name"`
-	Contacts      ContactList     `json:"Contacts"`
-	Opportunities OpportunityList `json:"Opportunities"`
+type Address struct {
+	City     string `json:"city" jsonout:"city"`
+	ZipCode  string `json:"zip_code" jsonout:"zipCode"`
+	CreateBy User   `json:"create_by" jsonout:"createBy" flatten:"external_id"`
 }
 
-// ContactList to handle nested Contact objects
-type ContactList struct {
-	TotalSize int       `json:"totalSize"`
-	Done      bool      `json:"done"`
-	Records   []Contact `json:"records"`
+type User struct {
+	ExternalID string `json:"external_id" jsonout:"externalId"`
 }
 
-// OpportunityList to handle nested Opportunity objects
-type OpportunityList struct {
-	TotalSize int           `json:"totalSize"`
-	Done      bool          `json:"done"`
-	Records   []Opportunity `json:"records"`
-}
-
-// Contact struct for individual contacts
-type Contact struct {
-	Attributes Attributes `json:"attributes"`
-	Id         string     `json:"Id"`
-	FirstName  string     `json:"FirstName"`
-	LastName   string     `json:"LastName"`
-	Email      string     `json:"Email"`
-}
-
-// Opportunity struct for individual opportunities
-type Opportunity struct {
-	Attributes Attributes `json:"attributes"`
-	Id         string     `json:"Id"`
-	Name       string     `json:"Name"`
-	StageName  string     `json:"StageName"`
-	CloseDate  string     `json:"CloseDate"`
-}
-
-// Attributes struct for metadata
-type Attributes struct {
-	Type string `json:"type"`
-	URL  string `json:"url"`
-}
-
-func parseTag(tag string, suffix string) (string, bool) {
-	if strings.HasSuffix(tag, suffix) {
-		return strings.TrimSuffix(tag, suffix), true
+func resolveFieldName(fieldType reflect.StructField) string {
+	jsonOutTag := fieldType.Tag.Get("jsonout")
+	jsonTag := fieldType.Tag.Get("json")
+	if jsonOutTag != "" {
+		return strings.Split(jsonOutTag, ",")[0]
 	}
-	return tag, false
+	if jsonTag != "" {
+		return strings.Split(jsonTag, ",")[0]
+	}
+	return fieldType.Name
 }
 
 func MarshalWithJsonOut(input interface{}) ([]byte, error) {
@@ -78,42 +48,49 @@ func MarshalWithJsonOut(input interface{}) ([]byte, error) {
 	for i := 0; i < val.NumField(); i++ {
 		field := val.Field(i)
 		fieldType := typ.Field(i)
-		jsonOutTag := fieldType.Tag.Get("jsonout")
-		jsonTag := fieldType.Tag.Get("json")
+		jsonOutTag := resolveFieldName(fieldType)
 
-		if jsonOutTag == "" {
-			if jsonTag != "" {
-				jsonOutTag = strings.Split(jsonTag, ",")[0]
-			} else {
-				jsonOutTag = fieldType.Name
-			}
+		if !field.CanInterface() {
+			continue
 		}
 
-		if tag, flatten := parseTag(jsonOutTag, ",flatten"); flatten {
-			jsonOutTag = tag
-			if field.Kind() == reflect.Struct {
-				for j := 0; j < field.NumField(); j++ {
-					nestedField := field.Field(j)
-					nestedType := field.Type().Field(j)
-					nestedJsonOutTag := nestedType.Tag.Get("jsonout")
-					nestedJsonTag := nestedType.Tag.Get("json")
-					if nestedJsonOutTag == "" {
-						if nestedJsonTag != "" {
-							nestedJsonOutTag = strings.Split(nestedJsonTag, ",")[0]
-						} else {
-							nestedJsonOutTag = nestedType.Name
-						}
-					}
-					outputMap[nestedJsonOutTag] = nestedField.Interface()
-				}
+		if iso8601Tag := fieldType.Tag.Get("iso8601_utc"); iso8601Tag == "true" {
+			if t, ok := field.Interface().(time.Time); ok && !t.IsZero() {
+				outputMap[jsonOutTag] = t.Format(time.RFC3339)
+			} else {
+				outputMap[jsonOutTag] = nil
 			}
 			continue
 		}
 
-		if tag, isDate := parseTag(jsonOutTag, ",date"); isDate {
-			jsonOutTag = tag
-			if t, ok := field.Interface().(time.Time); ok {
-				outputMap[jsonOutTag] = t.Format(time.RFC3339)
+		if flattenField := fieldType.Tag.Get("flatten"); flattenField != "" {
+			nestedVal := reflect.ValueOf(field.Interface())
+			nestedTyp := reflect.TypeOf(field.Interface())
+
+			for j := 0; j < nestedTyp.NumField(); j++ {
+				nestedField := nestedVal.Field(j)
+				nestedFieldType := nestedTyp.Field(j)
+
+				if nestedFieldType.Tag.Get("json") == flattenField && nestedField.CanInterface() {
+					if nestedField.Kind() == reflect.Struct {
+						nestedData, err := MarshalWithJsonOut(nestedField.Interface())
+						if err != nil {
+							fmt.Printf("Error flattening nested field %s: %v\n", flattenField, err)
+							continue
+						}
+						var nestedMap map[string]interface{}
+						if err := json.Unmarshal(nestedData, &nestedMap); err != nil {
+							fmt.Printf("Error unmarshalling flattened data for %s: %v\n", flattenField, err)
+							continue
+						}
+						for k, v := range nestedMap {
+							outputMap[k] = v
+						}
+					} else {
+						outputMap[jsonOutTag] = nestedField.Interface()
+					}
+					break
+				}
 			}
 			continue
 		}
@@ -135,50 +112,35 @@ func MarshalWithJsonOut(input interface{}) ([]byte, error) {
 		}
 	}
 
-	return json.Marshal(outputMap)
+	return json.MarshalIndent(outputMap, "", "    ")
 }
 
 func main() {
 	jsonInput := `{
-        "totalSize": 1,
-        "done": true,
-        "records": [{
-            "attributes": {"type": "Account", "url": "/services/data/v60.0/sobjects/Account/0012x00001ABC123"},
-            "Id": "0012x00001ABC123",
-            "Name": "TechCorp Inc.",
-            "Contacts": {
-                "totalSize": 1,
-                "done": true,
-                "records": [{
-                    "attributes": {"type": "Contact", "url": "/services/data/v60.0/sobjects/Contact/0032x00001XYZ123"},
-                    "Id": "0032x00001XYZ123",
-                    "FirstName": "John",
-                    "LastName": "Doe",
-                    "Email": "john.doe@techcorp.com"
-                }]
-            },
-            "Opportunities": {
-                "totalSize": 1,
-                "done": true,
-                "records": [{
-                    "attributes": {"type": "Opportunity", "url": "/services/data/v60.0/sobjects/Opportunity/0062x00001OPP123"},
-                    "Id": "0062x00001OPP123",
-                    "Name": "Enterprise Sale",
-                    "StageName": "Closed Won",
-                    "CloseDate": "2024-06-30"
-                }]
+        "first_name": "John",
+        "last_name": "Doe",
+        "age": 30,
+        "address": {
+            "city": "New York",
+            "zip_code": "10001",
+            "create_by": {
+                "external_id": "Deb"
             }
-        }]
+        },
+        "create_date": "2025-01-06T16:00:00Z",
+        "create_by": {
+            "external_id": "Rix"
+        }
     }`
 
-	var person AccountResponse
-	err := json.Unmarshal([]byte(jsonInput), &person)
+	var someObject Person
+	err := json.Unmarshal([]byte(jsonInput), &someObject)
 	if err != nil {
 		fmt.Println("Error unmarshalling JSON:", err)
 		return
 	}
 
-	jsonData, err := MarshalWithJsonOut(person)
+	jsonData, err := MarshalWithJsonOut(someObject)
 	if err != nil {
 		fmt.Println("Error marshaling JSON:", err)
 		return
@@ -186,3 +148,5 @@ func main() {
 
 	fmt.Println(string(jsonData))
 }
+
+// Version 2.0
