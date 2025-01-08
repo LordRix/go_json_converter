@@ -9,18 +9,19 @@ import (
 )
 
 type Person struct {
-	FirstName  string    `json:"first_name" jsonout:"firstName"`
-	LastName   string    `json:"last_name" jsonout:"lastName"`
-	Age        int       `json:"age" jsonout:"ageYears"`
-	Address    Address   `json:"address" jsonout:"homeAddress"`
-	CreateDate time.Time `json:"create_date" jsonout:"createDate" iso8601_utc:"true"`
-	CreateBy   User      `json:"create_by" jsonout:"createBy" flatten:"external_id"`
+	FirstName  string  `json:"first_name" jsonout:"firstName"`
+	LastName   string  `json:"last_name" jsonout:"lastName"`
+	Age        int     `json:"age" jsonout:"ageYears"`
+	Address    Address `json:"address" jsonout:"homeAddress"`
+	CreateDate string  `json:"create_date" jsonout:"createDate" iso8601_utc:"true"`
+	CreateBy   User    `json:"create_by" jsonout:"createBy" flatten:"external_id"`
 }
 
 type Address struct {
-	City     string `json:"city" jsonout:"city"`
-	ZipCode  string `json:"zip_code" jsonout:"zipCode"`
-	CreateBy User   `json:"create_by" jsonout:"createBy" flatten:"external_id"`
+	City       string `json:"city" jsonout:"city"`
+	ZipCode    string `json:"zip_code" jsonout:"zipCode"`
+	CreateBy   User   `json:"create_by" jsonout:"createBy" flatten:"external_id"`
+	CreateDate string `json:"create_date" jsonout:"createDate" iso8601_utc:"true"`
 }
 
 type User struct {
@@ -55,8 +56,18 @@ func MarshalWithJsonOut(input interface{}) ([]byte, error) {
 		}
 
 		if iso8601Tag := fieldType.Tag.Get("iso8601_utc"); iso8601Tag == "true" {
-			if t, ok := field.Interface().(time.Time); ok && !t.IsZero() {
-				outputMap[jsonOutTag] = t.Format(time.RFC3339)
+			if str, ok := field.Interface().(string); ok && str != "" {
+				const iso8601Layout = "2006-01-02T15:04:05.999-0700"
+
+				// Parse the input using the specified layout
+				parsedTime, err := time.Parse(iso8601Layout, str)
+
+				if err != nil {
+					fmt.Printf("Error parsing date for %s: %v\n", jsonOutTag, err)
+					outputMap[jsonOutTag] = str
+				} else {
+					outputMap[jsonOutTag] = parsedTime.UTC().Format(time.RFC3339)
+				}
 			} else {
 				outputMap[jsonOutTag] = nil
 			}
@@ -125,9 +136,10 @@ func main() {
             "zip_code": "10001",
             "create_by": {
                 "external_id": "Deb"
-            }
+            },
+            "create_date": "2025-01-06T16:00:00.000+0000"
         },
-        "create_date": "2025-01-06T16:00:00Z",
+        "create_date": "2025-01-06T16:15:39.452+0100",
         "create_by": {
             "external_id": "Rix"
         }
@@ -149,4 +161,4 @@ func main() {
 	fmt.Println(string(jsonData))
 }
 
-// Version 2.0
+// Version 2.3
