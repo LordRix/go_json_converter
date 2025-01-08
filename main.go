@@ -8,24 +8,27 @@ import (
 	"time"
 )
 
-type Person struct {
-	FirstName  string  `json:"first_name" jsonout:"firstName"`
-	LastName   string  `json:"last_name" jsonout:"lastName"`
-	Age        int     `json:"age" jsonout:"ageYears"`
-	Address    Address `json:"address" jsonout:"homeAddress"`
-	CreateDate string  `json:"create_date" jsonout:"createDate" iso8601_utc:"true"`
-	CreateBy   User    `json:"create_by" jsonout:"createBy" flatten:"external_id"`
+type AccountContainer struct {
+	Accounts []Account `json:"records" jsonout:"accounts"`
 }
-
-type Address struct {
-	City       string `json:"city" jsonout:"city"`
-	ZipCode    string `json:"zip_code" jsonout:"zipCode"`
-	CreateBy   User   `json:"create_by" jsonout:"createBy" flatten:"external_id"`
-	CreateDate string `json:"create_date" jsonout:"createDate" iso8601_utc:"true"`
+type Account struct {
+	Id       string           `json:"Id" jsonout:"primaryKey"`
+	Name     string           `json:"Name" jsonout:"name"`
+	Contacts ContactContainer `json:"Contacts" jsonout:"contactsContainer"`
 }
-
+type ContactContainer struct {
+	Contacts []Contact `json:"records" jsonout:"contacts"`
+}
+type Contact struct {
+	ID          string `json:"Id" jsonout:"id"`
+	FirstName   string `json:"FirstName" jsonout:"firstName"`
+	LastName    string `json:"LastName" jsonout:"lastName"`
+	Email       string `json:"Email" jsonout:"email"`
+	CreatedDate string `json:"CreatedDate" jsonout:"createdDate" iso8601_utc:"true"`
+	CreatedBy   User   `json:"CreatedBy" flatten:"External_Id" jsonout:"externalId"`
+}
 type User struct {
-	ExternalID string `json:"external_id" jsonout:"externalId"`
+	External_Id string `json:"External_Id"`
 }
 
 func resolveFieldName(fieldType reflect.StructField) string {
@@ -55,13 +58,26 @@ func MarshalWithJsonOut(input interface{}) ([]byte, error) {
 			continue
 		}
 
+		if flattenField := fieldType.Tag.Get("flatten"); flattenField != "" {
+			nestedVal := reflect.ValueOf(field.Interface())
+			nestedTyp := reflect.TypeOf(field.Interface())
+
+			for j := 0; j < nestedTyp.NumField(); j++ {
+				nestedField := nestedVal.Field(j)
+				nestedFieldType := nestedTyp.Field(j)
+
+				if nestedFieldType.Name == flattenField && nestedField.CanInterface() {
+					outputMap[jsonOutTag] = nestedField.Interface()
+					break
+				}
+			}
+			continue
+		}
+
 		if iso8601Tag := fieldType.Tag.Get("iso8601_utc"); iso8601Tag == "true" {
 			if str, ok := field.Interface().(string); ok && str != "" {
 				const iso8601Layout = "2006-01-02T15:04:05.999-0700"
-
-				// Parse the input using the specified layout
 				parsedTime, err := time.Parse(iso8601Layout, str)
-
 				if err != nil {
 					fmt.Printf("Error parsing date for %s: %v\n", jsonOutTag, err)
 					outputMap[jsonOutTag] = str
@@ -74,35 +90,22 @@ func MarshalWithJsonOut(input interface{}) ([]byte, error) {
 			continue
 		}
 
-		if flattenField := fieldType.Tag.Get("flatten"); flattenField != "" {
-			nestedVal := reflect.ValueOf(field.Interface())
-			nestedTyp := reflect.TypeOf(field.Interface())
-
-			for j := 0; j < nestedTyp.NumField(); j++ {
-				nestedField := nestedVal.Field(j)
-				nestedFieldType := nestedTyp.Field(j)
-
-				if nestedFieldType.Tag.Get("json") == flattenField && nestedField.CanInterface() {
-					if nestedField.Kind() == reflect.Struct {
-						nestedData, err := MarshalWithJsonOut(nestedField.Interface())
-						if err != nil {
-							fmt.Printf("Error flattening nested field %s: %v\n", flattenField, err)
-							continue
-						}
-						var nestedMap map[string]interface{}
-						if err := json.Unmarshal(nestedData, &nestedMap); err != nil {
-							fmt.Printf("Error unmarshalling flattened data for %s: %v\n", flattenField, err)
-							continue
-						}
-						for k, v := range nestedMap {
-							outputMap[k] = v
-						}
-					} else {
-						outputMap[jsonOutTag] = nestedField.Interface()
-					}
-					break
+		if field.Kind() == reflect.Slice {
+			sliceData := []interface{}{}
+			for j := 0; j < field.Len(); j++ {
+				nestedData, err := MarshalWithJsonOut(field.Index(j).Interface())
+				if err != nil {
+					fmt.Printf("Error marshaling slice element %s: %v\n", jsonOutTag, err)
+					continue
 				}
+				var nestedMap map[string]interface{}
+				if err := json.Unmarshal(nestedData, &nestedMap); err != nil {
+					fmt.Printf("Error unmarshalling slice element data for %s: %v\n", jsonOutTag, err)
+					continue
+				}
+				sliceData = append(sliceData, nestedMap)
 			}
+			outputMap[jsonOutTag] = sliceData
 			continue
 		}
 
@@ -128,24 +131,55 @@ func MarshalWithJsonOut(input interface{}) ([]byte, error) {
 
 func main() {
 	jsonInput := `{
-        "first_name": "John",
-        "last_name": "Doe",
-        "age": 30,
-        "address": {
-            "city": "New York",
-            "zip_code": "10001",
-            "create_by": {
-                "external_id": "Deb"
-            },
-            "create_date": "2025-01-06T16:00:00.000+0000"
-        },
-        "create_date": "2025-01-06T16:15:39.452+0100",
-        "create_by": {
-            "external_id": "Rix"
-        }
+        "totalSize": 1,
+        "done": true,
+        "records": [
+            {
+                "attributes": {
+                    "type": "Account",
+                    "url": "/services/data/v60.0/sobjects/Account/0012x00001ABC123"
+                },
+                "Id": "0012x00001ABC123",
+                "Name": "TechCorp Inc.",
+                "Contacts": {
+                    "totalSize": 2,
+                    "done": true,
+                    "records": [
+                        {
+                            "attributes": {
+                                "type": "Contact",
+                                "url": "/services/data/v60.0/sobjects/Contact/0032x00001XYZ123"
+                            },
+                            "Id": "0032x00001XYZ123",
+                            "FirstName": "John",
+                            "LastName": "Doe",
+                            "Email": "john.doe@techcorp.com",
+                            "CreatedDate": "2025-01-06T16:15:39.452+0100",
+                            "CreatedBy": {
+                              "External_id": "Rix"
+                            }
+                        },
+                        {
+                            "attributes": {
+                                "type": "Contact",
+                                "url": "/services/data/v60.0/sobjects/Contact/0032x00001XYZ124"
+                            },
+                            "Id": "0032x00001XYZ124",
+                            "FirstName": "Mary",
+                            "LastName": "Doe",
+                            "Email": "mary.doe@techcorp.com",
+                            "CreatedDate": "2025-01-06T12:11:49.452+0100",
+                            "CreatedBy": {
+                              "External_id": "Deb"
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
     }`
 
-	var someObject Person
+	var someObject AccountContainer
 	err := json.Unmarshal([]byte(jsonInput), &someObject)
 	if err != nil {
 		fmt.Println("Error unmarshalling JSON:", err)
@@ -161,4 +195,4 @@ func main() {
 	fmt.Println(string(jsonData))
 }
 
-// Version 2.4
+// Version 2.7
